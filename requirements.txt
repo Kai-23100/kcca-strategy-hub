@@ -1,6 +1,6 @@
 streamlit
-streamlit-authenticator
-gspread
-oauth2client
 pandas
 plotly
+gspread
+oauth2client
+streamlit-authenticator
