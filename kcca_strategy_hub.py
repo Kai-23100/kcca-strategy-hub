@@ -1,8 +1,6 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-import requests
-from bs4 import BeautifulSoup
 from datetime import date, datetime
 
 # ----------------- App Configuration -----------------
@@ -13,72 +11,50 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# ----------------- Utility: Scrape Departments & Directorates -----------------
-@st.cache_data(ttl=86400)
-def fetch_kcca_departments_and_directorates():
-    url = "https://www.kcca.go.ug/departments"
-    try:
-        res = requests.get(url, timeout=10)
-        soup = BeautifulSoup(res.text, "html.parser")
-        depts = []
-        directorates = []
-        # Try to find all department and directorate names in the KCCA page
-        # Typical structure: directorate as panel-title, departments as panel-body list
-        for panel in soup.find_all("div", {"class": "panel"}):
-            panel_title = panel.find("h4", {"class": "panel-title"})
-            dir_name = (
-                panel_title.get_text(strip=True)
-                if panel_title else None
-            )
-            panel_body = panel.find("div", {"class": "panel-body"})
-            dept_list = []
-            if panel_body:
-                for li in panel_body.find_all("li"):
-                    dept_list.append(li.get_text(strip=True))
-            if dir_name:
-                directorates.append(dir_name)
-                if dept_list:
-                    for dept in dept_list:
-                        depts.append((dir_name, dept))
-                else:
-                    depts.append((dir_name, dir_name))  # Sometimes the directorate==department
-        # Fallback for alternate HTML structure
-        if not depts:
-            # Try h4 for directorates and h5 or li for departments
-            h4s = [h4.get_text(strip=True) for h4 in soup.find_all("h4")]
-            h5s = [h5.get_text(strip=True) for h5 in soup.find_all("h5")]
-            if h4s:
-                directorates = h4s
-            if h5s:
-                depts = [(dir_name, dept) for dir_name in h4s for dept in h5s]
-            else:
-                depts = [(d, d) for d in h4s]
-        # Remove duplicates and blanks
-        directorates = sorted(set([d for d in directorates if d.strip()]))
-        depts = sorted(set([d for d in depts if d[1].strip()]))
-        dept_names = [d[1] for d in depts]
-        return directorates, dept_names, depts
-    except Exception:
-        # Fallback: hardcoded
-        directorates = [
-            "Directorate of Engineering and Technical Services",
-            "Directorate of Public Health and Environment",
-            "Directorate of Education and Social Services",
-            "Directorate of Treasury Services",
-            "Directorate of Revenue Collection",
-            "Directorate of Human Resource and Administration",
-            "Directorate of Internal Audit",
-            "Directorate of Legal Affairs",
-            "Directorate of Gender, Community Services and Production",
-            "Directorate of Strategy, Research and Performance"
-        ]
-        depts = [(d, d) for d in directorates]
-        dept_names = [d for _, d in depts]
-        return directorates, dept_names, depts
+# ----------------- Static: Directorates & Departments -----------------
+DIRECTORATES = [
+    "Office of the Executive Director",
+    "Administration & Human Resource",
+    "Physical Planning",
+    "Treasury Services",
+    "Engineering & Technical Services",
+    "Public Health Services & Environment",
+    "Education & Social Services",
+    "Legal Affairs",
+    "Revenue Collection",
+    "Internal Audit",
+    "Gender, Community Services & Production",
+    "Deputy Executive Director"
+]
 
-DIRECTORATES, DEPARTMENTS, DEPT_TUPLES = fetch_kcca_departments_and_directorates()
+# Departments mapped to their directorates
+DEPARTMENT_MAP = {
+    "Office of the Executive Director": [],
+    "Administration & Human Resource": [],
+    "Physical Planning": [],
+    "Treasury Services": [],
+    "Engineering & Technical Services": [],
+    "Public Health Services & Environment": [],
+    "Education & Social Services": [],
+    "Legal Affairs": [],
+    "Revenue Collection": [],
+    "Internal Audit": [],
+    "Gender, Community Services & Production": [],
+    "Deputy Executive Director": [
+        "Information & Communication Technology",
+        "Public & Corporate Affairs",
+        "Procurement & Disposal Unit",
+        "Research & Strategy Management"
+    ]
+}
 
-# ----------------- Static: NDP III Programmes -----------------
+ALL_DEPARTMENTS = []
+for dir_name, depts in DEPARTMENT_MAP.items():
+    if not depts:
+        ALL_DEPARTMENTS.append(dir_name)
+    else:
+        ALL_DEPARTMENTS.extend(depts)
+
 NDP_PROGRAMMES = [
     "Integrated Transport Infrastructure and Services",
     "Sustainable Urban Development",
@@ -96,11 +72,36 @@ NDP_PROGRAMMES = [
 ]
 
 # ----------------- Session State for Data -----------------
-def init_df(key, columns):
-    if key not in st.session_state:
-        st.session_state[key] = pd.DataFrame(columns=columns)
+def init_df(key, columns, default_data=None):
+    if key not in st.session_state or (default_data and st.session_state[key].empty):
+        if default_data is not None:
+            st.session_state[key] = pd.DataFrame(default_data)
+        else:
+            st.session_state[key] = pd.DataFrame(columns=columns)
 
-init_df("kpi_data", ["Department", "Directorate", "KPI", "Target", "Current", "Status", "NDP Programme"])
+# Sample KPI data for demonstration
+sample_kpis = [
+    {
+        "Department": "Public Health Services & Environment",
+        "Directorate": "Public Health Services & Environment",
+        "KPI": "Immunization Coverage",
+        "Target": 95,
+        "Current": 80,
+        "Status": "Amber",
+        "NDP Programme": "Human Capital Development"
+    },
+    {
+        "Department": "Education & Social Services",
+        "Directorate": "Education & Social Services",
+        "KPI": "School Enrollment",
+        "Target": 50000,
+        "Current": 47000,
+        "Status": "Green",
+        "NDP Programme": "Human Capital Development"
+    }
+]
+
+init_df("kpi_data", ["Department", "Directorate", "KPI", "Target", "Current", "Status", "NDP Programme"], sample_kpis)
 init_df("weekly_eval", ["Department", "Directorate", "Week", "Score"])
 init_df("projects_df", ["Project", "Department", "Directorate", "NDP Programme", "Status", "Due Date"])
 init_df("risks_df", ["Department", "Directorate", "Issue", "Urgency", "Date"])
@@ -128,14 +129,21 @@ with st.sidebar:
     )
     st.markdown("---")
     st.caption(f"Logged in as: **{username or 'Anonymous'}** ({role})")
+    st.markdown("**Useful Links:**")
+    st.markdown("[KCCA Website](https://www.kcca.go.ug)")
+    st.markdown("[GovInfoHub](https://www.govinfohub.go.ug)")
+
+# ----------------- Utility Functions -----------------
+def get_departments_for_directorate(directorate):
+    depts = DEPARTMENT_MAP.get(directorate, [])
+    return depts if depts else [directorate]
 
 # ----------------- Strategic Plan Tracker -----------------
 def strategic_plan_tracker():
     st.header("📈 Strategic Plan Tracker")
     kpi_data = st.session_state["kpi_data"]
-    st.write(
-        "Monitor, add, and update KPIs for all KCCA departments/directorates, aligned to NDP III programmes."
-    )
+    st.write("Monitor, add, and update KPIs for all KCCA departments/directorates, aligned to NDP III programmes.")
+
     if not kpi_data.empty:
         color_map = {"Green": "#34c759", "Amber": "#ffd60a", "Red": "#ff3b30"}
         fig = px.bar(
@@ -157,11 +165,8 @@ def strategic_plan_tracker():
         st.subheader("Add or Update KPI")
         with st.form("update_kpi", clear_on_submit=True):
             directorate = st.selectbox("Directorate", DIRECTORATES)
-            depts_for_dir = [d for d in DEPT_TUPLES if d[0] == directorate]
-            dept = st.selectbox(
-                "Department",
-                [d[1] for d in depts_for_dir] if depts_for_dir else [directorate]
-            )
+            departments = get_departments_for_directorate(directorate)
+            dept = st.selectbox("Department", departments)
             kpi = st.text_input("KPI Name")
             ndp_prog = st.selectbox("NDP Programme", NDP_PROGRAMMES)
             target = st.number_input("Target Value", min_value=0)
@@ -198,13 +203,10 @@ def weekly_evaluation():
     st.header("📅 Weekly Evaluation of Directorates & Departments")
     weekly_eval = st.session_state["weekly_eval"]
     st.write("Track and report weekly performance for directorates and departments.")
+
     directorate = st.selectbox("Directorate", DIRECTORATES, key="weekly_dir")
-    depts_for_dir = [d for d in DEPT_TUPLES if d[0] == directorate]
-    dept = st.selectbox(
-        "Department",
-        [d[1] for d in depts_for_dir] if depts_for_dir else [directorate],
-        key="weekly_dept"
-    )
+    departments = get_departments_for_directorate(directorate)
+    dept = st.selectbox("Department", departments, key="weekly_dept")
     filtered = weekly_eval[
         (weekly_eval["Department"] == dept) & (weekly_eval["Directorate"] == directorate)
     ] if not weekly_eval.empty else pd.DataFrame()
@@ -285,12 +287,8 @@ def project_management():
         st.subheader("Add New Project")
         with st.form("add_project", clear_on_submit=True):
             directorate = st.selectbox("Directorate", DIRECTORATES, key="proj_dir")
-            depts_for_dir = [d for d in DEPT_TUPLES if d[0] == directorate]
-            dept = st.selectbox(
-                "Department",
-                [d[1] for d in depts_for_dir] if depts_for_dir else [directorate],
-                key="proj_dept"
-            )
+            departments = get_departments_for_directorate(directorate)
+            dept = st.selectbox("Department", departments, key="proj_dept")
             proj = st.text_input("Project Title")
             ndp_prog = st.selectbox("NDP Programme", NDP_PROGRAMMES, key="proj_ndp")
             status = st.selectbox("Status", ["Not Started", "In Progress", "Completed", "Stalled"])
@@ -322,12 +320,8 @@ def risk_reporting():
         st.subheader("Report a New Risk or Bottleneck")
         with st.form("risk_form", clear_on_submit=True):
             directorate = st.selectbox("Directorate", DIRECTORATES, key="risk_dir")
-            depts_for_dir = [d for d in DEPT_TUPLES if d[0] == directorate]
-            dept = st.selectbox(
-                "Department",
-                [d[1] for d in depts_for_dir] if depts_for_dir else [directorate],
-                key="risk_dept"
-            )
+            departments = get_departments_for_directorate(directorate)
+            dept = st.selectbox("Department", departments, key="risk_dept")
             issue = st.text_area("Describe the issue or risk")
             urgency = st.selectbox("Urgency", ["Low", "Medium", "High", "Critical"])
             submit = st.form_submit_button("Submit Report")
@@ -359,12 +353,8 @@ def budget_monitoring():
         st.subheader("Add Budget Data")
         with st.form("add_budget", clear_on_submit=True):
             directorate = st.selectbox("Directorate", DIRECTORATES, key="budget_dir")
-            depts_for_dir = [d for d in DEPT_TUPLES if d[0] == directorate]
-            dept = st.selectbox(
-                "Department",
-                [d[1] for d in depts_for_dir] if depts_for_dir else [directorate],
-                key="budget_dept"
-            )
+            departments = get_departments_for_directorate(directorate)
+            dept = st.selectbox("Department", departments, key="budget_dept")
             budget = st.number_input("Approved Budget (UGX)", min_value=0)
             expenditure = st.number_input("Expenditure (UGX)", min_value=0)
             variance = budget - expenditure
@@ -428,4 +418,4 @@ st.caption(
     "KCCA Strategy Hub | Streamlit Demo (In-memory, not persistent). "
     "Developed for Monitoring, Evaluation & Reporting across KCCA directorates. "
     f"Session started on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-)
+    )
