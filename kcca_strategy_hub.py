@@ -203,6 +203,17 @@ elif menu == "Document Repository":
     if uploaded_file:
         st.success(f"File uploaded: {uploaded_file.name}")
         # In production, save to cloud storage and store metadata in Google Sheets
+import streamlit_authenticator as stauth
+
+names = ['Admin User', 'Strategy Officer']
+usernames = ['admin', 'officer']
+passwords = ['adminpass', 'officerpass']  # Plaintext, for demo only!
+
+# Option 1: Hash at runtime (not recommended for production)
+hashed_pw = stauth.Hasher(passwords).generate()
+
+# Option 2: Use pre-hashed
+# hashed_pw = ['$2b$12$...', '$2b$12$...']
 
 st.markdown("---")
 st.caption("KCCA Strategy Hub | Powered by Streamlit & Google Sheets | Demo version")
