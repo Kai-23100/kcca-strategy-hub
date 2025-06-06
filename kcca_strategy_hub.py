@@ -13,30 +13,54 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# ----------------- Utility: Scrape Departments -----------------
+# ----------------- Utility: Scrape Departments & Directorates -----------------
 @st.cache_data(ttl=86400)
-def fetch_kcca_departments():
+def fetch_kcca_departments_and_directorates():
     url = "https://www.kcca.go.ug/departments"
     try:
         res = requests.get(url, timeout=10)
         soup = BeautifulSoup(res.text, "html.parser")
-        # Try to find all department names in the KCCA departments page
         depts = []
-        for div in soup.find_all("div", {"class": "panel-group"}):
-            for panel in div.find_all("div", {"class": "panel"}):
-                title = panel.find("h4", {"class": "panel-title"})
-                if title:
-                    dept_name = title.get_text(strip=True)
-                    depts.append(dept_name)
+        directorates = []
+        # Try to find all department and directorate names in the KCCA page
+        # Typical structure: directorate as panel-title, departments as panel-body list
+        for panel in soup.find_all("div", {"class": "panel"}):
+            panel_title = panel.find("h4", {"class": "panel-title"})
+            dir_name = (
+                panel_title.get_text(strip=True)
+                if panel_title else None
+            )
+            panel_body = panel.find("div", {"class": "panel-body"})
+            dept_list = []
+            if panel_body:
+                for li in panel_body.find_all("li"):
+                    dept_list.append(li.get_text(strip=True))
+            if dir_name:
+                directorates.append(dir_name)
+                if dept_list:
+                    for dept in dept_list:
+                        depts.append((dir_name, dept))
+                else:
+                    depts.append((dir_name, dir_name))  # Sometimes the directorate==department
         # Fallback for alternate HTML structure
         if not depts:
-            depts = [h4.get_text(strip=True) for h4 in soup.find_all("h4")]
+            # Try h4 for directorates and h5 or li for departments
+            h4s = [h4.get_text(strip=True) for h4 in soup.find_all("h4")]
+            h5s = [h5.get_text(strip=True) for h5 in soup.find_all("h5")]
+            if h4s:
+                directorates = h4s
+            if h5s:
+                depts = [(dir_name, dept) for dir_name in h4s for dept in h5s]
+            else:
+                depts = [(d, d) for d in h4s]
         # Remove duplicates and blanks
-        depts = sorted(set([d for d in depts if d.strip()]))
-        return depts
+        directorates = sorted(set([d for d in directorates if d.strip()]))
+        depts = sorted(set([d for d in depts if d[1].strip()]))
+        dept_names = [d[1] for d in depts]
+        return directorates, dept_names, depts
     except Exception:
         # Fallback: hardcoded
-        return [
+        directorates = [
             "Directorate of Engineering and Technical Services",
             "Directorate of Public Health and Environment",
             "Directorate of Education and Social Services",
@@ -48,8 +72,11 @@ def fetch_kcca_departments():
             "Directorate of Gender, Community Services and Production",
             "Directorate of Strategy, Research and Performance"
         ]
+        depts = [(d, d) for d in directorates]
+        dept_names = [d for _, d in depts]
+        return directorates, dept_names, depts
 
-DEPARTMENTS = fetch_kcca_departments()
+DIRECTORATES, DEPARTMENTS, DEPT_TUPLES = fetch_kcca_departments_and_directorates()
 
 # ----------------- Static: NDP III Programmes -----------------
 NDP_PROGRAMMES = [
@@ -73,11 +100,11 @@ def init_df(key, columns):
     if key not in st.session_state:
         st.session_state[key] = pd.DataFrame(columns=columns)
 
-init_df("kpi_data", ["Department", "KPI", "Target", "Current", "Status", "NDP Programme"])
+init_df("kpi_data", ["Department", "Directorate", "KPI", "Target", "Current", "Status", "NDP Programme"])
 init_df("weekly_eval", ["Department", "Directorate", "Week", "Score"])
-init_df("projects_df", ["Project", "Department", "NDP Programme", "Status", "Due Date"])
-init_df("risks_df", ["Department", "Issue", "Urgency", "Date"])
-init_df("budget_df", ["Department", "Budget", "Expenditure", "Variance"])
+init_df("projects_df", ["Project", "Department", "Directorate", "NDP Programme", "Status", "Due Date"])
+init_df("risks_df", ["Department", "Directorate", "Issue", "Urgency", "Date"])
+init_df("budget_df", ["Department", "Directorate", "Budget", "Expenditure", "Variance"])
 init_df("documents", ["Name", "Type", "Uploaded By", "Date", "Notes"])
 
 # ----------------- Simple Authentication (Session Only) -----------------
@@ -107,7 +134,7 @@ def strategic_plan_tracker():
     st.header("📈 Strategic Plan Tracker")
     kpi_data = st.session_state["kpi_data"]
     st.write(
-        "Monitor, add, and update KPIs for all KCCA departments, aligned to NDP III programmes."
+        "Monitor, add, and update KPIs for all KCCA departments/directorates, aligned to NDP III programmes."
     )
     if not kpi_data.empty:
         color_map = {"Green": "#34c759", "Amber": "#ffd60a", "Red": "#ff3b30"}
@@ -117,7 +144,7 @@ def strategic_plan_tracker():
             y="Current",
             color="Status",
             color_discrete_map=color_map,
-            hover_data=["Department", "Target", "NDP Programme"],
+            hover_data=["Department", "Directorate", "Target", "NDP Programme"],
             barmode="group",
             title="KPI Progress"
         )
@@ -129,7 +156,12 @@ def strategic_plan_tracker():
     if role in ["Admin", "Strategy Officer"]:
         st.subheader("Add or Update KPI")
         with st.form("update_kpi", clear_on_submit=True):
-            dept = st.selectbox("Department", DEPARTMENTS)
+            directorate = st.selectbox("Directorate", DIRECTORATES)
+            depts_for_dir = [d for d in DEPT_TUPLES if d[0] == directorate]
+            dept = st.selectbox(
+                "Department",
+                [d[1] for d in depts_for_dir] if depts_for_dir else [directorate]
+            )
             kpi = st.text_input("KPI Name")
             ndp_prog = st.selectbox("NDP Programme", NDP_PROGRAMMES)
             target = st.number_input("Target Value", min_value=0)
@@ -138,7 +170,11 @@ def strategic_plan_tracker():
             submit = st.form_submit_button("Submit KPI")
             if submit and kpi:
                 df = st.session_state["kpi_data"]
-                idx = df[(df["Department"] == dept) & (df["KPI"] == kpi)].index
+                idx = df[
+                    (df["Department"] == dept) &
+                    (df["Directorate"] == directorate) &
+                    (df["KPI"] == kpi)
+                ].index
                 if len(idx):
                     df.loc[idx, ["Target", "Current", "Status", "NDP Programme"]] = [
                         target, current, status, ndp_prog
@@ -146,6 +182,7 @@ def strategic_plan_tracker():
                 else:
                     new_row = pd.DataFrame([{
                         "Department": dept,
+                        "Directorate": directorate,
                         "KPI": kpi,
                         "Target": target,
                         "Current": current,
@@ -161,8 +198,13 @@ def weekly_evaluation():
     st.header("📅 Weekly Evaluation of Directorates & Departments")
     weekly_eval = st.session_state["weekly_eval"]
     st.write("Track and report weekly performance for directorates and departments.")
-    dept = st.selectbox("Department", DEPARTMENTS)
-    directorate = st.text_input("Directorate", value="", key="dir_eval")
+    directorate = st.selectbox("Directorate", DIRECTORATES, key="weekly_dir")
+    depts_for_dir = [d for d in DEPT_TUPLES if d[0] == directorate]
+    dept = st.selectbox(
+        "Department",
+        [d[1] for d in depts_for_dir] if depts_for_dir else [directorate],
+        key="weekly_dept"
+    )
     filtered = weekly_eval[
         (weekly_eval["Department"] == dept) & (weekly_eval["Directorate"] == directorate)
     ] if not weekly_eval.empty else pd.DataFrame()
@@ -242,8 +284,14 @@ def project_management():
     if role in ["Admin", "Strategy Officer"]:
         st.subheader("Add New Project")
         with st.form("add_project", clear_on_submit=True):
+            directorate = st.selectbox("Directorate", DIRECTORATES, key="proj_dir")
+            depts_for_dir = [d for d in DEPT_TUPLES if d[0] == directorate]
+            dept = st.selectbox(
+                "Department",
+                [d[1] for d in depts_for_dir] if depts_for_dir else [directorate],
+                key="proj_dept"
+            )
             proj = st.text_input("Project Title")
-            dept = st.selectbox("Department", DEPARTMENTS, key="proj_dept")
             ndp_prog = st.selectbox("NDP Programme", NDP_PROGRAMMES, key="proj_ndp")
             status = st.selectbox("Status", ["Not Started", "In Progress", "Completed", "Stalled"])
             due = st.date_input("Due Date", value=date.today(), key="proj_due")
@@ -252,6 +300,7 @@ def project_management():
                 new_row = pd.DataFrame([{
                     "Project": proj,
                     "Department": dept,
+                    "Directorate": directorate,
                     "NDP Programme": ndp_prog,
                     "Status": status,
                     "Due Date": str(due)
@@ -272,13 +321,20 @@ def risk_reporting():
     if role in ["Admin", "Strategy Officer"]:
         st.subheader("Report a New Risk or Bottleneck")
         with st.form("risk_form", clear_on_submit=True):
-            dept = st.selectbox("Reporting Department", DEPARTMENTS, key="risk_dept")
+            directorate = st.selectbox("Directorate", DIRECTORATES, key="risk_dir")
+            depts_for_dir = [d for d in DEPT_TUPLES if d[0] == directorate]
+            dept = st.selectbox(
+                "Department",
+                [d[1] for d in depts_for_dir] if depts_for_dir else [directorate],
+                key="risk_dept"
+            )
             issue = st.text_area("Describe the issue or risk")
             urgency = st.selectbox("Urgency", ["Low", "Medium", "High", "Critical"])
             submit = st.form_submit_button("Submit Report")
             if submit and issue:
                 new_row = pd.DataFrame([{
                     "Department": dept,
+                    "Directorate": directorate,
                     "Issue": issue,
                     "Urgency": urgency,
                     "Date": datetime.now().isoformat(timespec="seconds")
@@ -302,7 +358,13 @@ def budget_monitoring():
     if role in ["Admin", "Strategy Officer"]:
         st.subheader("Add Budget Data")
         with st.form("add_budget", clear_on_submit=True):
-            dept = st.selectbox("Department", DEPARTMENTS, key="budget_dept")
+            directorate = st.selectbox("Directorate", DIRECTORATES, key="budget_dir")
+            depts_for_dir = [d for d in DEPT_TUPLES if d[0] == directorate]
+            dept = st.selectbox(
+                "Department",
+                [d[1] for d in depts_for_dir] if depts_for_dir else [directorate],
+                key="budget_dept"
+            )
             budget = st.number_input("Approved Budget (UGX)", min_value=0)
             expenditure = st.number_input("Expenditure (UGX)", min_value=0)
             variance = budget - expenditure
@@ -310,6 +372,7 @@ def budget_monitoring():
             if submit:
                 new_row = pd.DataFrame([{
                     "Department": dept,
+                    "Directorate": directorate,
                     "Budget": budget,
                     "Expenditure": expenditure,
                     "Variance": variance
@@ -329,7 +392,6 @@ def document_repository():
     uploaded_file = st.file_uploader("Upload document (PDF, DOCX, XLSX)", type=["pdf", "docx", "xlsx"])
     notes = st.text_area("Notes (describe document purpose, content, etc.)")
     if uploaded_file and role in ["Admin", "Strategy Officer"]:
-        # "Storing" the file info only; real storage would save to S3, GDrive, etc.
         doc_type = uploaded_file.type
         new_row = pd.DataFrame([{
             "Name": uploaded_file.name,
@@ -364,6 +426,6 @@ elif menu == "Document Repository":
 st.markdown("---")
 st.caption(
     "KCCA Strategy Hub | Streamlit Demo (In-memory, not persistent). "
-    "Developed for professional Monitoring, Evaluation & Reporting across KCCA directorates. "
+    "Developed for Monitoring, Evaluation & Reporting across KCCA directorates. "
     f"Session started on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
 )
