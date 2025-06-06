@@ -1,19 +1,20 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+import requests
+from bs4 import BeautifulSoup
 import gspread
 import streamlit_authenticator as stauth
 from oauth2client.service_account import ServiceAccountCredentials
 from datetime import date
 
-# -------------- CONFIGURATION --------------
+# --------- CONFIGURATION ---------
 GOOGLE_SHEET_NAME = "KCCA_Strategy_Hub"
 CREDENTIALS_FILE = "service_account.json"
 
-# -------------- AUTHENTICATION --------------
+# --------- AUTHENTICATION ---------
 names = ["Admin User", "Strategy Officer"]
 usernames = ["admin", "officer"]
-# Use bcrypt hashes generated externally for security
 hashed_pw = [
     "$2b$12$OfG5IH7Nw5w5VjM9QyU6hO2ddR2pWq8bYfQO0vA4v3xESfF7EKn7u",  # hash for adminpass
     "$2b$12$LkAqKp9S1y6O3w8Q8G3xZe3X4r0nE0E9H9bE9bF4uNfM6hT0nF9jO"   # hash for officerpass
@@ -22,14 +23,13 @@ authenticator = stauth.Authenticate(
     names, usernames, hashed_pw, "kcca_strategy_hub", "abcdef", cookie_expiry_days=1
 )
 name, auth_status, username = authenticator.login("Login", "main")
-
 if not auth_status:
     st.warning("Please log in to access the KCCA Strategy Hub.")
     st.stop()
 role = "admin" if username == "admin" else "user"
 st.sidebar.success(f"Welcome {name}! ({role})")
 
-# -------------- GOOGLE SHEETS CONNECTION --------------
+# --------- GOOGLE SHEETS CONNECTION ---------
 @st.cache_resource(show_spinner=False)
 def get_gspread_client():
     scope = [
@@ -38,7 +38,6 @@ def get_gspread_client():
     ]
     creds = ServiceAccountCredentials.from_json_keyfile_name(CREDENTIALS_FILE, scope)
     return gspread.authorize(creds)
-
 gc = get_gspread_client()
 sh = gc.open(GOOGLE_SHEET_NAME)
 
@@ -48,31 +47,66 @@ def read_sheet(sheet_name):
     if df.empty:
         return pd.DataFrame()
     return df
-
 def write_sheet(sheet_name, df):
     ws = sh.worksheet(sheet_name)
     ws.clear()
     ws.update([df.columns.values.tolist()] + df.values.tolist())
 
-# -------------- DATA LOAD --------------
-try:
-    departments_df = read_sheet("departments")
-    kpi_data = read_sheet("kpis")
-    weekly_eval = read_sheet("weekly_eval")
-    ndp_programmes_df = read_sheet("ndp_programmes")
-    projects_df = read_sheet("projects")
-    risks_df = read_sheet("risks")
-except Exception as e:
-    st.error(f"Error loading data from Google Sheets: {e}")
-    st.stop()
+# --------- SCRAPE KCCA DEPARTMENTS ---------
+@st.cache_data(ttl=86400)
+def fetch_kcca_departments():
+    url = "https://www.kcca.go.ug/departments"
+    try:
+        res = requests.get(url, timeout=10)
+        soup = BeautifulSoup(res.text, "html.parser")
+        depts = []
+        for div in soup.find_all("div", {"class": "panel-group"}):
+            for panel in div.find_all("div", {"class": "panel"}):
+                title = panel.find("h4", {"class": "panel-title"})
+                if title:
+                    dept_name = title.get_text(strip=True)
+                    depts.append(dept_name)
+        if not depts:
+            # fallback for different structure
+            depts = [h4.get_text(strip=True) for h4 in soup.find_all("h4")]
+        return depts
+    except Exception:
+        # fallback to Google Sheet
+        try:
+            departments_df = read_sheet("departments")
+            return departments_df["Department"].dropna().tolist() if not departments_df.empty else []
+        except Exception:
+            return []
+departments = fetch_kcca_departments()
 
-departments = departments_df["Department"].dropna().tolist() if not departments_df.empty else []
-ndp_programmes = ndp_programmes_df["NDP Programme"].dropna().tolist() if not ndp_programmes_df.empty else []
+# --------- NDP PROGRAMMES ---------
+ndp_programmes = [
+    "Integrated Transport Infrastructure and Services", "Sustainable Urban Development",
+    "Human Capital Development", "Community Mobilization and Mindset Change",
+    "Natural Resources, Environment, Climate Change, Land and Water Management",
+    "Private Sector Development", "Digital Transformation", "Innovation, Technology Development",
+    "Governance and Security", "Public Sector Transformation", "Sustainable Energy Development",
+    "Tourism Development", "Regional Development"
+]
 
-# -------------- SIDEBAR NAVIGATION --------------
+# --------- DATA LOAD ---------
+def load_data():
+    try:
+        kpi_data = read_sheet("kpis")
+        weekly_eval = read_sheet("weekly_eval")
+        projects_df = read_sheet("projects")
+        risks_df = read_sheet("risks")
+        budget_df = read_sheet("budgets")
+        return kpi_data, weekly_eval, projects_df, risks_df, budget_df
+    except Exception as e:
+        st.error(f"Error loading data from Google Sheets: {e}")
+        st.stop()
+kpi_data, weekly_eval, projects_df, risks_df, budget_df = load_data()
+
+# --------- SIDEBAR NAVIGATION ---------
 st.set_page_config(layout="wide", page_title="KCCA Strategy Hub")
 st.title("📊 KCCA Strategy Hub")
-st.caption("Role-based strategy, M&E, and project management for KCCA")
+st.caption("Strategy, M&E, Project & Budget Management for KCCA")
 
 menu = st.sidebar.radio(
     "Go to",
@@ -88,13 +122,10 @@ menu = st.sidebar.radio(
     ]
 )
 
-# -------------- STRATEGIC PLAN TRACKER --------------
+# --------- STRATEGIC PLAN TRACKER ---------
 if menu == "Strategic Plan Tracker":
     st.header("📈 Strategic Plan Tracker")
-    st.write(
-        "Monitor KPIs for all KCCA departments, aligned to NDP III programmes. "
-        "Admins can update or add KPIs. All users can view departmental performance and targets."
-    )
+    st.write("Monitor KPIs for all KCCA departments, aligned to NDP III programmes.")
     if not kpi_data.empty:
         color_map = {"Green": "#34c759", "Amber": "#ffd60a", "Red": "#ff3b30"}
         fig = px.bar(
@@ -137,10 +168,10 @@ if menu == "Strategic Plan Tracker":
                 write_sheet("kpis", kpi_data)
                 st.success("KPI updated.")
 
-# -------------- WEEKLY EVALUATION --------------
+# --------- WEEKLY EVALUATION ---------
 elif menu == "Weekly Evaluation":
-    st.header("📅 Weekly Departmental Evaluation")
-    dept = st.selectbox("Department", departments)
+    st.header("📅 Weekly Directorate/Department Evaluation")
+    dept = st.selectbox("Department/Directorate", departments)
     filtered = weekly_eval[weekly_eval["Department"] == dept] if not weekly_eval.empty else pd.DataFrame()
     if not filtered.empty:
         st.line_chart(filtered.set_index("Week")["Score"])
@@ -161,7 +192,7 @@ elif menu == "Weekly Evaluation":
                 write_sheet("weekly_eval", weekly_eval)
                 st.success("Weekly evaluation added.")
 
-# -------------- PERFORMANCE DASHBOARD --------------
+# --------- PERFORMANCE DASHBOARD ---------
 elif menu == "Performance Dashboard":
     st.header("📊 Performance Dashboard")
     if not kpi_data.empty:
@@ -173,11 +204,11 @@ elif menu == "Performance Dashboard":
     else:
         st.info("No KPI data to show performance.")
 
-# -------------- NDP ALIGNMENT --------------
+# --------- NDP ALIGNMENT ---------
 elif menu == "NDP Alignment":
     st.header("🎯 KCCA Alignment to NDP III Programmes")
     st.write("Track departmental and project alignment to the 13 NDP III programmes.")
-    st.dataframe(ndp_programmes_df)
+    st.dataframe(pd.DataFrame({"NDP Programme": ndp_programmes}))
     if not kpi_data.empty:
         ndp_fulfillment = (
             kpi_data.groupby("NDP Programme")
@@ -194,7 +225,7 @@ elif menu == "NDP Alignment":
     else:
         st.info("No KPI data for NDP alignment.")
 
-# -------------- PROJECT MANAGEMENT --------------
+# --------- PROJECT MANAGEMENT ---------
 elif menu == "Project Management":
     st.header("📋 Project Management")
     if not projects_df.empty:
@@ -219,7 +250,7 @@ elif menu == "Project Management":
                 write_sheet("projects", projects_df)
                 st.success("Project added.")
 
-# -------------- RISK REPORTING --------------
+# --------- RISK REPORTING ---------
 elif menu == "Risk Reporting":
     st.header("🚨 Risk & Bottleneck Reporting")
     if not risks_df.empty:
@@ -238,23 +269,22 @@ elif menu == "Risk Reporting":
             write_sheet("risks", risks_df)
             st.success("Risk reported.")
 
-# -------------- BUDGET MONITORING --------------
+# --------- BUDGET MONITORING ---------
 elif menu == "Budget Monitoring":
     st.header("💰 Budget Monitoring")
-    st.info("Budget monitoring and analysis module coming soon.")
+    if not budget_df.empty:
+        st.dataframe(budget_df)
+        st.bar_chart(budget_df.set_index("Department")["Expenditure"])
+    else:
+        st.info("No budget data. Please add in Google Sheet tab 'budgets'.")
 
-# -------------- DOCUMENT REPOSITORY --------------
+# --------- DOCUMENT REPOSITORY ---------
 elif menu == "Document Repository":
     st.header("📁 Strategy Document Repository")
-    st.write("Upload and view strategy documents and reports. (Storage for files not yet implemented in this demo.)")
+    st.write("Upload and view strategy documents and reports (storage not implemented in demo).")
     uploaded_file = st.file_uploader("Upload document (PDF, DOCX, XLSX)", type=["pdf", "docx", "xlsx"])
     if uploaded_file:
         st.success(f"File uploaded: {uploaded_file.name} (Demo only, not stored!)")
-        # For production, save to cloud storage and update a Sheet for metadata
-
-st.markdown("---")
-st.caption("KCCA Strategy Hub | Powered by Streamlit & Google Sheets | Demo version")
-# hashed_pw = ['$2b$12$...', '$2b$12$...']
 
 st.markdown("---")
 st.caption("KCCA Strategy Hub | Powered by Streamlit & Google Sheets | Demo version")
